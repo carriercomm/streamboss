@@ -1,0 +1,25 @@
+| = whitespace field separator
+
+### STREAM REGISTRATION FORMATS (Send to reg_stream):
+[N | key=STRING | freq=# | frontend=STRING]                     # New stream request
+|-> reply_to: [Y | your_tx_uuid | routekey]
+|-> reply_to: [N] # haha u suck
+[R | original_uuid]                          # Reconnect after loss of signal
+|-> reply_to: [Y routekey]
+|-> reply_to: [N] # lol refused
+[A | uuid | freq=float | pauseme=TF ]            # Alter stream request
+|-> reply_to: [Y newstate]
+|-> reply_to: [N] # no U do what I say!
+[D | uuid action=<kill|cold>]                                      # Delete stream
+|-> [Y] # lol bai
+|-> [N] # Ignore and close anyway lol
+
+### ANNOUNCER QUEUE MESSAGE FORMATS
+announcer_out format:
+[N key=routekey freq=FREQ state=WARM]      # New queue
+[A key=routekey (freq=F) (state=newstate)] # Altered queue state
+[D routekey]                                   # Deletion of queue
+
+stream table schema:
+[tx_uuid | rx_uuid | routekey | status | process_name | freq | israw ]
+create table datastreams(tx_uuid bigint, rx_uuid bigint, routekey varchar(64), status tinyint, process_name varchar(128), freq float, israw bool);
