@@ -8,9 +8,9 @@ import sys
 import pika
 
 BUFSIZE = 4096
-RMQHOST = os.environ['STREAMBOSS_RABBITMQ_HOST']
-RABBITMQ_USER = os.environ['STREAMBOSS_RABBITMQ_USER']
-RABBITMQ_PASSWORD = os.environ['STREAMBOSS_RABBITMQ_PASSWORD']
+RMQHOST = os.environ.get('STREAMBOSS_RABBITMQ_HOST', 'localhost')
+RABBITMQ_USER = os.environ.get('STREAMBOSS_RABBITMQ_USER', 'guest')
+RABBITMQ_PASSWORD = os.environ.get('STREAMBOSS_RABBITMQ_PASSWORD', 'guest')
 
 
 class ProcessDispatcherAgent(object):
@@ -40,23 +40,34 @@ class ProcessDispatcherAgent(object):
         self.input_stream = sys.argv[2]
         self.output_stream = sys.argv[3]
 
+        self.exchange_name = 'streams'
+
+        self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, auto_delete=True)
+
         self.input_queue = self.channel.queue_declare(queue=self.input_stream)
         self.output_queue = self.channel.queue_declare(queue=self.output_stream)
-        self.channel.queue_bind(exchange='streams', queue=self.input_queue.method.queue, routing_key=self.input_stream)
-        self.channel.queue_bind(exchange='streams', queue=self.output_queue.method.queue, routing_key=self.output_stream)
+        self.channel.queue_bind(exchange=self.exchange_name,
+                queue=self.input_queue.method.queue, routing_key=self.input_stream)
+        self.channel.queue_bind(exchange=self.exchange_name,
+                queue=self.output_queue.method.queue, routing_key=self.output_stream)
 
     def consume_func(self, ch, method, properties, body):
         if method.exchange == "streams":
             message = body
-            print "Got message: %s" % message
+            print "< got: %s" % message
 
-        p = Popen(self.process_path, shell=True, bufsize=BUFSIZE, stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
+        p = Popen(self.process_path, shell=True, bufsize=BUFSIZE,
+                stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
         (child_stdin, child_stdout, child_stderr) = (p.stdin, p.stdout, p.stderr)
         child_stdin.write(message + "\n")
         child_stdin.flush()
+        # TODO: differentiate between ongoing and one-shot
+        child_stdin.close()
         returncode = p.wait()
+        output = child_stdout.read()
+        print "> sending: %s" % output
         if returncode == 0:
-            self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=child_stdout.read())
+            self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=output)
         else:
             print "Error running %s: returned %d" % (self.process_path, returncode)
 
