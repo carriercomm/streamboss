@@ -57,7 +57,7 @@ class ProcessDispatcherAgent(object):
             print "< got: %s" % message
 
         p = Popen(self.process_path, shell=True, bufsize=BUFSIZE,
-                stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
+                stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True, cwd="/tmp")
         (child_stdin, child_stdout, child_stderr) = (p.stdin, p.stdout, p.stderr)
         child_stdin.write(message + "\n")
         child_stdin.flush()
