@@ -2,7 +2,6 @@
 
 import os
 import sys
-import time
 
 from subprocess import Popen
 
@@ -21,8 +20,11 @@ class TestStreamAgent(object):
         self.connection = pika.BlockingConnection(pika.ConnectionParameters(RMQHOST, credentials=credentials))
         self.channel = self.connection.channel()
 
-        self.input_stream = 'instream'
-        self.output_stream = 'outstream'
+        start_agent = int(os.environ.get("START_AGENT", 1))
+        self.start_agent = True if start_agent == 1 else False
+
+        self.input_stream = os.environ.get('INPUT_STREAM', 'instream')
+        self.output_stream = os.environ.get('OUTPUT_STREAM', 'outstream')
         self.exchange_name = 'streams'
 
         self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, auto_delete=True)
@@ -39,22 +41,35 @@ class TestStreamAgent(object):
         if method.exchange == self.exchange_name:
             message = body
 
-            assert message == "TEST\n", "message is '%s' expected '%s'" % (message, "TEST")
-            sys.exit(0)
+            assert message == "TEST", "message is '%s' expected '%s'" % (message, "TEST")
+            print "TEST OK"
+            self.cleanup()
+
+    def timeout(self):
+        print "TEST FAILED"
+        self.cleanup()
+        sys.exit(1)
+
+    def cleanup(self):
+        self.channel.stop_consuming()
+        self.connection.close()
+        if self.p:
+            self.p.kill()
 
     def start(self):
         body = "test"
-        self.channel.basic_publish(exchange='streams', routing_key=self.input_stream, body=body)
         self.channel.basic_consume(self.consume_func, queue=self.output_queue.method.queue, no_ack=True)
 
-        self.p = Popen(['python', 'stream_agent.py', '{"exec": "tr \'[a-z]\' \'[A-Z]\'"}',
-            self.input_stream, self.output_stream])
-        self.connection.close()
+        if self.start_agent:
+            self.p = Popen(['python', 'stream_agent.py', '{"exec": "tr \'[a-z]\' \'[A-Z]\'"}',
+                self.input_stream, self.output_stream])
+        else:
+            self.p = None
 
-        time.sleep(4)
-        self.p.kill()
-        sys.exit("TEST FAILED, had to kill agent")
+        self.channel.basic_publish(exchange='streams', routing_key=self.input_stream, body=body)
+        self.connection.add_timeout(9, self.timeout)
 
+        self.channel.start_consuming()
 
 if __name__ == '__main__':
     TestStreamAgent().start()

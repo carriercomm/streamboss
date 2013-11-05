@@ -140,9 +140,14 @@ class StreamBoss(object):
         self.db_curs.execute("UPDATE streams SET created=0, process_id=NULL WHERE routekey='%s';" % stream)
 
     def get_process_definition(self, process_definition_id):
-        r = requests.get('http://%s:%s/api/process_definition/%d' % (
-            PROCESS_REGISTRY_HOSTNAME, PROCESS_REGISTRY_PORT, process_definition_id),
-            auth=(PROCESS_REGISTRY_USERNAME, PROCESS_REGISTRY_PASSWORD))
+        try:
+            r = requests.get('http://%s:%s/api/process_definition/%d' % (
+                PROCESS_REGISTRY_HOSTNAME, PROCESS_REGISTRY_PORT, process_definition_id),
+                auth=(PROCESS_REGISTRY_USERNAME, PROCESS_REGISTRY_PASSWORD))
+        except Exception:
+            log.exception("Problem connecting to process registry")
+            return None
+
         if r.status_code == 200:
             if r.headers['content-type'] == "application/json":
                 process_definition = r.json().get("definition")

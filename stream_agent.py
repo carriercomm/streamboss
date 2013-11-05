@@ -31,7 +31,7 @@ class ProcessDispatcherAgent(object):
             #self.process_definition = json.loads(json_data)
 
         json_data = sys.argv[1]
-        print json_data
+        print "Process Description: %s" % json_data
         self.process_definition = json.loads(json_data)
 
         if self.process_definition is not None:
@@ -65,6 +65,8 @@ class ProcessDispatcherAgent(object):
         child_stdin.close()
         returncode = p.wait()
         output = child_stdout.read()
+        if output[-1] == '\n':
+            output = output[:-1]
         print "> sending: %s" % output
         if returncode == 0:
             self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=output)
