@@ -2,7 +2,8 @@
 
 import os
 import sys
-import time
+
+from subprocess import Popen
 
 import pika
 
@@ -19,30 +20,23 @@ class TestStreamAgent(object):
         self.connection = pika.BlockingConnection(pika.ConnectionParameters(RMQHOST, credentials=credentials))
         self.channel = self.connection.channel()
 
-        self.consume_stream = sys.argv[1]
+        self.publish_stream = sys.argv[1]
+        self.body = sys.argv[2]
         self.exchange_name = 'streams'
 
         self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, auto_delete=True)
 
-        self.consume_queue = self.channel.queue_declare(queue=self.consume_stream)
+        self.publish_queue = self.channel.queue_declare(queue=self.publish_stream)
         self.channel.queue_bind(exchange=self.exchange_name,
-                queue=self.consume_queue.method.queue, routing_key=self.consume_stream)
+                queue=self.publish_queue.method.queue, routing_key=self.publish_stream)
 
-    def consume_func(self, ch, method, properties, body):
-        if method.exchange == self.exchange_name:
-            message = body
-            print "GOT: '%s'" % message
+    def cleanup(self):
+        self.channel.stop_consuming()
+        self.connection.close()
 
     def start(self):
-        print "Consuming..."
-        try:
-            self.channel.basic_consume(self.consume_func, queue=self.consume_queue.method.queue, no_ack=True)
-            self.channel.start_consuming()
-        except Exception:
-            self.connection.close()
 
-        while True:
-            time.sleep(1)
+        self.channel.basic_publish(exchange='streams', routing_key=self.publish_stream, body=self.body)
 
 if __name__ == '__main__':
     TestStreamAgent().start()
