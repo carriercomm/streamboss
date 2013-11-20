@@ -2,9 +2,9 @@
 
 import logging
 import os
-import time
-import json
 import uuid
+import json
+import time
 
 import MySQLdb as sql
 import pika
@@ -81,7 +81,7 @@ class StreamBoss(object):
 
     def get_stream(self, stream):
         self.db_curs.execute(
-            "SELECT process_definition_id,input_stream,routekey,process,process_id FROM streams WHERE routekey='%s';" %
+            "SELECT process_definition_id,input_stream,routekey,process, process_id FROM streams WHERE routekey='%s';" %
             stream)
         stream_row = self.db_curs.fetchone()
         stream_dict = {
@@ -156,7 +156,7 @@ class StreamBoss(object):
 
     def mark_as_created(self, stream, process_id):
         self.db_curs.execute("UPDATE streams SET created=1, process_id='%s' WHERE routekey='%s';" % (
-            stream, process_id))
+            process_id, stream))
 
     def mark_as_not_created(self, stream):
         self.db_curs.execute("UPDATE streams SET created=0, process_id=NULL WHERE routekey='%s';" % stream)
@@ -187,7 +187,6 @@ class StreamBoss(object):
 
     def remove_stream(self, stream_name):
         self.db_curs.execute("DELETE FROM streams where streams.routekey='%s'" % stream_name)
-
 
     def activate_stream(self):
         """
