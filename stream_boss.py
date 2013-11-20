@@ -3,6 +3,8 @@
 import logging
 import os
 import time
+import json
+import uuid
 
 import MySQLdb as sql
 import pika
@@ -140,7 +142,7 @@ class StreamBoss(object):
             self.pd_client.update_process_definition(process_definition=definition,
                 process_definition_id=definition_id)
 
-        process_id = definition_id
+        process_id = "%s-%s" % (definition_id, uuid.uuid4().hex)
         self.pd_client.schedule_process(process_id, process_definition_id=definition_id,
                 execution_engine_id=definition_id)
 
@@ -185,6 +187,7 @@ class StreamBoss(object):
 
     def remove_stream(self, stream_name):
         self.db_curs.execute("DELETE FROM streams where streams.routekey='%s'" % stream_name)
+
 
     def activate_stream(self):
         """
