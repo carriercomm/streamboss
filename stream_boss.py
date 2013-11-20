@@ -39,13 +39,13 @@ RMQPORT = os.environ.get('STREAMBOSS_RABBITMQ_PORT', 5672)
 RABBITMQ_USER = os.environ.get('STREAMBOSS_RABBITMQ_USER', 'guest')
 RABBITMQ_PASSWORD = os.environ.get('STREAMBOSS_RABBITMQ_PASSWORD', 'guest')
 RABBITMQ_VHOST = os.environ.get('STREAMBOSS_RABBITMQ_VHOST', '/')
+RABBITMQ_EXCHANGE = os.environ.get('STREAMBOSS_RABBITMQ_EXCHANGE', 'default_dashi_exchange')
 
 PROCESS_REGISTRY_HOSTNAME = os.environ.get('PROCESS_REGISTRY_HOSTNAME', 'localhost')
 PROCESS_REGISTRY_PORT = int(os.environ.get('PROCESS_REGISTRY_PORT', 8080))
 PROCESS_REGISTRY_USERNAME = os.environ.get('PROCESS_REGISTRY_USERNAME', 'guest')
 PROCESS_REGISTRY_PASSWORD = os.environ.get('PROCESS_REGISTRY_PASSWORD', 'guest')
 
-AGENT_PATH = '/Users/priteau/Work/process-dispatcher/agent.py'
 STREAM_AGENT_PATH = os.environ.get("STREAM_AGENT_PATH",
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "stream_agent.py"))
 
@@ -68,7 +68,7 @@ class StreamBoss(object):
                       RMQPORT),
                   "default_dashi_exchange", ssl=False, sysname=None)
         self.pd_client = PDClient(self.dashi)
-        self.pd_client.dashi_name = 'pd_0'
+        self.pd_client.dashi_name = 'process_dispatcher'
 
     def get_all_streams(self):
         streams = {}
@@ -92,20 +92,39 @@ class StreamBoss(object):
         return stream_dict
 
     def launch_process(self, stream_description):
+
         process_definition_id = stream_description["process_definition_id"]
         input_stream = stream_description["input_stream"]
         output_stream = stream_description["output_stream"]
+        definition_id = output_stream
+
+        SLOTS = 10
 
         process_definition = self.get_process_definition(process_definition_id)
         if process_definition is None:
             log.error("Couldn't get process definition %s?" % process_definition_id)
             return None
 
-        definition_id = output_stream
+        deployable_type = process_definition.get('application', 'eeagent')
+        process_exec = process_definition.get('exec', None)
+        if process_exec is None:
+            raise Exception("process definition has no exec")
+        try:
+            self.pd_client.add_engine(definition_id, SLOTS, **{'deployable_type': deployable_type})
+        except Exception:
+            log.exception("COULDN'T ADD ENGINE")
+
         stream_agent_path = STREAM_AGENT_PATH
         executable = {
             'exec': stream_agent_path,
-            'argv': ['\'{"exec": "tr \'[a-z]\' \'[A-Z]\'"}\'', input_stream, output_stream]
+            'argv': [
+                "--rabbitmq-host %s" % RMQHOST,
+                "--rabbitmq-user %s" % RABBITMQ_USER,
+                "--rabbitmq-password %s" % RABBITMQ_PASSWORD,
+                '\'%s\'' % json.dumps(process_definition),
+                input_stream,
+                output_stream
+            ]
         }
         definition = {
             'definition_type': 'supd',
@@ -122,7 +141,8 @@ class StreamBoss(object):
                 process_definition_id=definition_id)
 
         process_id = definition_id
-        self.pd_client.schedule_process(process_id, process_definition_id=definition_id)
+        self.pd_client.schedule_process(process_id, process_definition_id=definition_id,
+                execution_engine_id=definition_id)
 
         return process_id
 
