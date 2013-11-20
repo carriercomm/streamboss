@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import time
+import argparse
 import threading
 
 from subprocess import PIPE, Popen, STDOUT
@@ -23,12 +24,29 @@ DEFAULT_PROCESS_TYPE = SINGLE_PROCESS_TYPE
 class ProcessDispatcherAgent(object):
 
     def __init__(self):
+        global RMQHOST
+        global RABBITMQ_USER
+        global RABBITMQ_PASSWORD
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("process_description")
+        parser.add_argument("input_stream")
+        parser.add_argument("output_stream")
+        parser.add_argument("--rabbitmq-host")
+        parser.add_argument("--rabbitmq-user")
+        parser.add_argument("--rabbitmq-password")
+        args = parser.parse_args()
+
+	if args.rabbitmq_host:
+            RMQHOST = args.rabbitmq_host
+	if args.rabbitmq_user:
+            RABBITMQ_USER = args.rabbitmq_user
+	if args.rabbitmq_host:
+            RABBITMQ_PASSWORD = args.rabbitmq_password
+
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
         self.connection = pika.BlockingConnection(pika.ConnectionParameters(RMQHOST, credentials=credentials))
         self.channel = self.connection.channel()
-
-        if len(sys.argv) != 4:
-            sys.exit("usage: %s process_definition input_stream output_stream" % sys.argv[0])
 
         self.process_definition = None
 
@@ -37,7 +55,7 @@ class ProcessDispatcherAgent(object):
             #json_data = f.read()
             #self.process_definition = json.loads(json_data)
 
-        json_data = sys.argv[1]
+        json_data = args.process_description
         print "Process Description: %s" % json_data
         self.process_definition = json.loads(json_data)
 
@@ -48,8 +66,8 @@ class ProcessDispatcherAgent(object):
         self.process_environment = self.process_definition.get("envirionment", {})
         self.process_type = self.process_definition.get("process_type", DEFAULT_PROCESS_TYPE)
 
-        self.input_stream = sys.argv[2]
-        self.output_stream = sys.argv[3]
+        self.input_stream = args.input_stream
+        self.output_stream = args.output_stream
 
         self.exchange_name = 'streams'
 
