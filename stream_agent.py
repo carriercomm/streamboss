@@ -3,7 +3,7 @@
 import os
 import sys
 import json
-import time
+import select
 import argparse
 import threading
 
@@ -37,11 +37,11 @@ class ProcessDispatcherAgent(object):
         parser.add_argument("--rabbitmq-password")
         args = parser.parse_args()
 
-	if args.rabbitmq_host:
+        if args.rabbitmq_host:
             RMQHOST = args.rabbitmq_host
-	if args.rabbitmq_user:
+        if args.rabbitmq_user:
             RABBITMQ_USER = args.rabbitmq_user
-	if args.rabbitmq_host:
+        if args.rabbitmq_host:
             RABBITMQ_PASSWORD = args.rabbitmq_password
 
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
@@ -56,7 +56,6 @@ class ProcessDispatcherAgent(object):
             #self.process_definition = json.loads(json_data)
 
         json_data = args.process_description
-        print "Process Description: %s" % json_data
         self.process_definition = json.loads(json_data)
 
         if self.process_definition is None:
@@ -120,10 +119,13 @@ class ProcessDispatcherAgent(object):
     def _read_from_process(self):
 
         while self.p.poll() is None:
-            line = self.p.stdout.readline()
-            print "> sending: %s" % line
-            self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=line)
-            time.sleep(0.1)
+            ready, _, _ = select.select([self.p.stdout], [], [], 1)
+            if ready:
+                line = self.p.stdout.readline()
+                print "> sending: %s" % line
+                self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=line)
+        else:
+            print "process ended with %s" % self.p.poll()
 
     def start(self):
 
