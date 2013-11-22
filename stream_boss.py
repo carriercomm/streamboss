@@ -182,11 +182,11 @@ class StreamBoss(object):
 
         return process_definition
 
-    def create_stream(self, stream_name, process_definition_id, input_stream, output_stream):
-        self.db_curs.execute("INSERT INTO streams (routekey, process_definition_id, input_stream, output_stream, created) VALUES ('%s', '%s', '%s', '%s', 0)" % (stream_name, process_definition_id, input_stream, output_stream))  # noqa
+    def create_operation(self, operation_name, process_definition_id, input_stream, output_stream):
+        self.db_curs.execute("INSERT INTO streams (routekey, process_definition_id, input_stream, output_stream, created) VALUES ('%s', '%s', '%s', '%s', 0)" % (operation_name, process_definition_id, input_stream, output_stream))  # noqa
 
-    def remove_stream(self, stream_name):
-        self.db_curs.execute("DELETE FROM streams where streams.routekey='%s'" % stream_name)
+    def remove_operation(self, operation_name):
+        self.db_curs.execute("DELETE FROM streams where streams.routekey='%s'" % operation_name)
 
     def activate_stream(self):
         """
