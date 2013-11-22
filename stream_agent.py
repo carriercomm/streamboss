@@ -62,7 +62,8 @@ class ProcessDispatcherAgent(object):
             sys.exit("No process definition provided")
 
         self.process_path = self.process_definition.get("exec")
-        self.process_environment = self.process_definition.get("envirionment", {})
+        self.process_environment = dict(os.environ.copy().items() +
+                self.process_definition.get("environment", {}).items())
         self.process_type = self.process_definition.get("process_type", DEFAULT_PROCESS_TYPE)
 
         self.input_stream = args.input_stream
