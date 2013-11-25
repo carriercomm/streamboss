@@ -5,14 +5,14 @@ import os
 import uuid
 import json
 import time
-
-import MySQLdb as sql
 import pika
 import requests
+import boto.s3.connection
+import MySQLdb as sql
 
 from ceiclient.client import PDClient
 from dashi import DashiConnection
-#from tasks import run
+from boto.s3.key import Key
 
 logging.basicConfig(level=logging.DEBUG)
 log = logging
@@ -21,6 +21,9 @@ log = logging
 
 pika_logger = logging.getLogger('pika')
 pika_logger.setLevel("CRITICAL")
+
+boto_logger = logging.getLogger('boto')
+boto_logger.setLevel("CRITICAL")
 
 dashi_logger = logging.getLogger('dashi')
 dashi_logger.setLevel("INFO")
@@ -48,6 +51,8 @@ PROCESS_REGISTRY_PORT = int(os.environ.get('PROCESS_REGISTRY_PORT', 8080))
 PROCESS_REGISTRY_USERNAME = os.environ.get('PROCESS_REGISTRY_USERNAME', 'guest')
 PROCESS_REGISTRY_PASSWORD = os.environ.get('PROCESS_REGISTRY_PASSWORD', 'guest')
 
+DEFAULT_ARCHIVE_BUCKET = "stream_archive"
+
 STREAM_AGENT_PATH = os.environ.get("STREAM_AGENT_PATH",
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "stream_agent.py"))
 
@@ -56,7 +61,8 @@ class StreamBoss(object):
 
     def __init__(self):
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
-        self.connection = pika.BlockingConnection(pika.ConnectionParameters(RMQHOST, credentials=credentials))
+        self.connection_parameters = pika.ConnectionParameters(RMQHOST, credentials=credentials)
+        self.connection = pika.BlockingConnection(self.connection_parameters)
         self.channel = self.connection.channel()
 
         self.db_connection = sql.connect(DBHOST, DBUSER, DBPASS, DBDB)
@@ -72,6 +78,9 @@ class StreamBoss(object):
         self.pd_client = PDClient(self.dashi)
         self.pd_client.dashi_name = 'process_dispatcher'
 
+        self.archived_streams = {}  # TODO: this sucks
+        self.s3_connection = self._get_s3_connection()
+
     def get_all_streams(self):
         streams = {}
         self.db_curs.execute("SELECT routekey, created FROM streams")
@@ -81,7 +90,8 @@ class StreamBoss(object):
 
     def get_stream(self, stream):
         self.db_curs.execute(
-            "SELECT process_definition_id,input_stream,routekey,process, process_id FROM streams WHERE routekey='%s';" %
+            "SELECT process_definition_id,input_stream,routekey,process, process_id, archive " +
+            "FROM streams WHERE routekey='%s';" %
             stream)
         stream_row = self.db_curs.fetchone()
         stream_dict = {
@@ -89,7 +99,8 @@ class StreamBoss(object):
             "input_stream": stream_row[1],
             "output_stream": stream_row[2],
             "process": stream_row[3],
-            "process_id": stream_row[4]
+            "process_id": stream_row[4],
+            "archive": stream_row[5]
         }
         return stream_dict
 
@@ -202,26 +213,83 @@ class StreamBoss(object):
         """
         pass
 
+    def start_archiving_stream(self, stream_name, bucket_name=DEFAULT_ARCHIVE_BUCKET,
+            leave_messages_on_queue=True):
+        """
+        Archives a stream to an S3 compatible service. Each message will be
+        saved in a file named archive-STREAMNAME-TIMESTAMP. In the future, this could
+        be chunked by second/minute/hour etc.
+        """
+        try:
+            bucket = self.s3_connection.get_bucket(bucket_name)
+        except boto.exception.S3ResponseError:
+            self.s3_connection.create_bucket(bucket_name)
+            bucket = self.s3_connection.get_bucket(bucket_name)
+
+        def archive_message(ch, method, properties, body):
+            k = Key(bucket)
+            filename = "archive-%s-%s" % (stream_name, str(time.time()))
+            k.key = filename
+            k.set_contents_from_string(body)
+
+        consumer_key = self.channel.basic_consume(archive_message, queue=stream_name)
+        self.archived_streams[stream_name] = consumer_key
+
+    def stop_archiving_stream(self, stream_name):
+
+        consumer_tag = self.archived_streams[stream_name]
+        self.channel.basic_cancel(consumer_tag=consumer_tag, nowait=False)
+        self.db_curs.execute("UPDATE streams SET archive=0 WHERE routekey='%s';" % stream_name)
+        del self.archived_streams[stream_name]
+
+    def archive_stream(self, stream_name):
+        self.db_curs.execute("UPDATE streams SET archive=1 WHERE routekey='%s';" % stream_name)
+
+    def disable_archive_stream(self, stream_name):
+        self.db_curs.execute("UPDATE streams SET archive=0 WHERE routekey='%s';" % stream_name)
+
+    def _get_s3_connection(self):
+        """
+        TODO: Only supports hotel for now.
+        """
+        conn = boto.s3.connection.S3Connection(is_secure=False, port=8888,
+             host='svc.uc.futuregrid.org', debug=0, https_connection_factory=None,
+             calling_format=boto.s3.connection.OrdinaryCallingFormat())
+        return conn
+
     def start(self):
         while True:
             streams = self.get_all_streams()
             try:
                 for stream in streams:
+                    stream_description = self.get_stream(stream)
+
+                    if (stream_description['archive'] == 1 and
+                            stream not in self.archived_streams.keys()):
+                        self.start_archiving_stream(stream)
+                    elif (stream_description['archive'] == 0 and
+                            stream in self.archived_streams.keys()):
+                        self.stop_archiving_stream(stream)
+
                     try:
                         status = self.channel.queue_declare(queue=stream)  # , passive=True)
                     except Exception as e:
                         print e
                         log.exception("Couldn't declare queue")
                         continue
+
+
                     message_count = status.method.message_count
                     consumer_count = status.method.consumer_count
+                    if stream in self.archived_streams.keys():
+                        consumer_count -= 1
+                        consumer_count = max(0, consumer_count)
                     created = streams[stream]["created"]
                     log.debug("%s: message_count %d, consumer_count %d, created %d" % (
                         stream, message_count, consumer_count, created))
 
                     if consumer_count > 0 and not created:
                         log.info("%s has consumers, launching its process" % stream)
-                        stream_description = self.get_stream(stream)
                         if stream_description is None:
                             print "NO PROC DEF ID"
 
@@ -229,7 +297,6 @@ class StreamBoss(object):
                         self.mark_as_created(stream, process_id)
                     elif consumer_count == 0 and created:
                         log.info("%s has 0 consumers, terminating its processes" % stream)
-                        stream_description = self.get_stream(stream)
                         process_id = stream_description.get('process_id')
                         if process_id:
                             self.terminate_process(process_id)
