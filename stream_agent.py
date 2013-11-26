@@ -3,13 +3,18 @@
 import os
 import sys
 import json
+import pika
 import select
 import argparse
 import threading
+try:
+    import boto
+except ImportError:
+    boto = None
 
 from subprocess import PIPE, Popen, STDOUT
 
-import pika
+from stream_boss import S3_FILE_PREFIX
 
 BUFSIZE = 4096
 RMQHOST = os.environ.get('STREAMBOSS_RABBITMQ_HOST', 'localhost')
@@ -88,6 +93,9 @@ class ProcessDispatcherAgent(object):
             print "< got unrecognized message"
             return
 
+        if message.startswith(S3_FILE_PREFIX):
+            message = self._get_file_from_s3_url(message)
+
         self.p = Popen(self.process_path, shell=True, bufsize=BUFSIZE, env=self.process_environment,
                 stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True, cwd="/tmp")
         (child_stdin, child_stdout, child_stderr) = (self.p.stdin, self.p.stdout, self.p.stderr)
@@ -113,6 +121,9 @@ class ProcessDispatcherAgent(object):
             print "< got unrecognized message"
             return
 
+        if message.startswith(S3_FILE_PREFIX):
+            message = self._get_file_from_s3_url(message)
+
         (child_stdin, child_stdout, child_stderr) = (self.p.stdin, self.p.stdout, self.p.stderr)
         child_stdin.write(message + "\n")
         child_stdin.flush()
@@ -127,6 +138,52 @@ class ProcessDispatcherAgent(object):
                 self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=line)
         else:
             print "process ended with %s" % self.p.poll()
+
+    def _get_file_from_s3_url(self, s3url):
+        s3url = s3url.replace(S3_FILE_PREFIX, '', 1)
+        if not s3url.startswith("s3://"):
+            print >> sys.stderr, "Not a valid s3 url"
+            return ""
+
+        s3url = s3url.replace("s3://", '', 1)
+        bucket_file = s3url.split('/', 1)
+        if len(bucket_file) != 2:
+            print >> sys.stderr, "s3 url does not have a bucket and filename"
+            return ""
+
+        bucket_name, filename = bucket_file
+
+        s3 = self._get_s3_connection()
+
+        try:
+            bucket = s3.get_bucket(bucket_name)
+        except boto.exception.S3ResponseError:
+            print >> sys.stderr, "Couldn't get bucket '%s'" % bucket_name
+            return ""
+
+        try:
+            key = bucket.get_key(filename)
+        except boto.exception.S3ResponseError:
+            print >> sys.stderr, "Couldn't get file '%s'" % filename
+            return ""
+        if key is None:
+            print >> sys.stderr, "Couldn't get file '%s'" % filename
+            return ""
+        try:
+            contents = key.get_contents_as_string()
+        except boto.exception.S3ResponseError:
+            print >> sys.stderr, "Couldn't get file '%s'" % filename
+            return ""
+        return contents
+
+    def _get_s3_connection(self):
+        """
+        TODO: Only supports hotel for now.
+        """
+        conn = boto.s3.connection.S3Connection(is_secure=False, port=8888,
+             host='svc.uc.futuregrid.org', debug=0, https_connection_factory=None,
+             calling_format=boto.s3.connection.OrdinaryCallingFormat())
+        return conn
 
     def start(self):
 
@@ -143,11 +200,13 @@ class ProcessDispatcherAgent(object):
 
         try:
             self.channel.start_consuming()
-        except:
+        except Exception as e:
+            print e
             self.channel.stop_consuming()
 
-        self.p.kill()
-        self.p.wait()
+        if hasattr(self, 'p') and self.p:
+            self.p.kill()
+            self.p.wait()
         self.connection.close()
 
 if __name__ == '__main__':

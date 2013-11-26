@@ -34,6 +34,8 @@ amqp_logger.setLevel("INFO")
 requests_logger = logging.getLogger('requests')
 requests_logger.setLevel("CRITICAL")
 
+S3_FILE_PREFIX = "___STREAMBOSS_S3_FILE___"
+
 DBHOST = os.environ.get('STREAMBOSS_DBHOST', 'localhost')
 DBUSER = os.environ.get('STREAMBOSS_DBUSER', 'guest')
 DBPASS = os.environ.get('STREAMBOSS_DBPASS', 'guest')
@@ -74,7 +76,7 @@ class StreamBoss(object):
                       RABBITMQ_USER,
                       RABBITMQ_PASSWORD, RMQHOST,
                       RMQPORT),
-                  "default_dashi_exchange", ssl=False, sysname=None)
+                  RABBITMQ_EXCHANGE, ssl=False, sysname=None)
         self.pd_client = PDClient(self.dashi)
         self.pd_client.dashi_name = 'process_dispatcher'
 
@@ -248,6 +250,41 @@ class StreamBoss(object):
     def disable_archive_stream(self, stream_name):
         self.db_curs.execute("UPDATE streams SET archive=0 WHERE routekey='%s';" % stream_name)
 
+    def stream_archive(self, archived_stream_name, bucket_name=DEFAULT_ARCHIVE_BUCKET,
+            stream_onto=None, start_time=None, end_time=None):
+
+        if stream_onto is None:
+            stream_onto = archived_stream_name
+
+        try:
+            bucket = self.s3_connection.get_bucket(bucket_name)
+        except boto.exception.S3ResponseError:
+            raise Exception("Bucket '%s' is not available. Can't stream." % bucket_name)
+
+        keys = bucket.get_all_keys()
+        messages = {}
+        for key in keys:
+            filename = key.key
+            name_parts = filename.split('-')
+            if len(name_parts) != 3 or not filename.startswith("archive"):
+                #archive filename isn't in a recognizable format
+                continue
+            _, stream_name, timestamp = name_parts
+            if stream_name == archived_stream_name:
+                message = key.get_contents_as_string()
+                print "s3: %s" % message
+                messages[timestamp] = message
+
+        timestamps = messages.keys()
+        timestamps.sort()
+        for ts in timestamps:
+            self.channel.basic_publish(exchange='streams', routing_key=stream_name, body=messages[ts])
+
+    def stream_file(self, stream_name, bucket_name, filename):
+
+        message = "%s:s3://%s/%s" % (S3_FILE_PREFIX, bucket_name, filename)
+        self.channel.basic_publish(exchange='streams', routing_key=stream_name, body=message)
+
     def _get_s3_connection(self):
         """
         TODO: Only supports hotel for now.
@@ -277,7 +314,6 @@ class StreamBoss(object):
                         print e
                         log.exception("Couldn't declare queue")
                         continue
-
 
                     message_count = status.method.message_count
                     consumer_count = status.method.consumer_count
