@@ -35,6 +35,7 @@ requests_logger = logging.getLogger('requests')
 requests_logger.setLevel("CRITICAL")
 
 S3_FILE_PREFIX = "___STREAMBOSS_S3_FILE___"
+EXCHANGE_PREFIX = "streams"
 
 DBHOST = os.environ.get('STREAMBOSS_DBHOST', 'localhost')
 DBUSER = os.environ.get('STREAMBOSS_DBUSER', 'guest')
@@ -82,19 +83,27 @@ class StreamBoss(object):
 
         self.archived_streams = {}  # TODO: this sucks
         self.s3_connection = self._get_s3_connection()
+        self.operations = {}
 
     def get_all_streams(self):
         streams = {}
-        self.db_curs.execute("SELECT routekey, created FROM streams")
+        self.db_curs.execute("SELECT stream_name FROM streams")
+        for stream_name in self.db_curs.fetchall():
+            streams[stream_name] = {}
+        return streams
+
+    def get_all_operations(self):
+        streams = {}
+        self.db_curs.execute("SELECT routekey, created FROM operations")
         for name, created in self.db_curs.fetchall():
             streams[name] = {"created": created}
         return streams
 
-    def get_stream(self, stream):
+    def get_operation(self, operation):
         self.db_curs.execute(
-            "SELECT process_definition_id,input_stream,routekey,process, process_id, archive " +
-            "FROM streams WHERE routekey='%s';" %
-            stream)
+            "SELECT process_definition_id,input_stream,output_stream,process, process_id, archive " +
+            "FROM operations WHERE routekey='%s';" %
+            operation)
         stream_row = self.db_curs.fetchone()
         stream_dict = {
             "process_definition_id": stream_row[0],
@@ -103,6 +112,20 @@ class StreamBoss(object):
             "process": stream_row[3],
             "process_id": stream_row[4],
             "archive": stream_row[5]
+        }
+        return stream_dict
+
+    def get_stream(self, stream):
+        self.db_curs.execute(
+            "SELECT stream_name,archive " +
+            "FROM streams WHERE stream_name='%s';" %
+            stream)
+        stream_row = self.db_curs.fetchone()
+        if stream_row is None:
+            return None
+        stream_dict = {
+            "stream_name": stream_row[0],
+            "archive": stream_row[1],
         }
         return stream_dict
 
@@ -168,11 +191,11 @@ class StreamBoss(object):
             log.exception("Can't delete %s. Maybe already deleted?")
 
     def mark_as_created(self, stream, process_id):
-        self.db_curs.execute("UPDATE streams SET created=1, process_id='%s' WHERE routekey='%s';" % (
+        self.db_curs.execute("UPDATE operations SET created=1, process_id='%s' WHERE routekey='%s';" % (
             process_id, stream))
 
     def mark_as_not_created(self, stream):
-        self.db_curs.execute("UPDATE streams SET created=0, process_id=NULL WHERE routekey='%s';" % stream)
+        self.db_curs.execute("UPDATE operations SET created=0, process_id=NULL WHERE routekey='%s';" % stream)
 
     def get_process_definition(self, process_definition_id):
         try:
@@ -201,18 +224,15 @@ class StreamBoss(object):
     def remove_operation(self, operation_name):
         self.db_curs.execute("DELETE FROM streams where streams.routekey='%s'" % operation_name)
 
-    def activate_stream(self):
-        """
-        When there are subscribers to a stream, we should start a stream process
-        via the PD to start processing it
-        """
-        pass
+    def create_stream(self, stream_name):
+        s = self.get_stream(stream_name)
+        if s is None:
+            q = "INSERT INTO streams (stream_name) VALUES ('%s') " % stream_name
+            self.db_curs.execute(q)
+        s = self.get_stream(stream_name)
+        return s
 
-    def deactivate_stream(self):
-        """
-        When there no subscribers to a stream, we should terminate any stream processes
-        via the PD
-        """
+    def remove_stream(self):
         pass
 
     def start_archiving_stream(self, stream_name, bucket_name=DEFAULT_ARCHIVE_BUCKET,
@@ -228,33 +248,59 @@ class StreamBoss(object):
             self.s3_connection.create_bucket(bucket_name)
             bucket = self.s3_connection.get_bucket(bucket_name)
 
+        try:
+            exchange_name = "%s.%s" % (EXCHANGE_PREFIX, stream_name)
+            self.channel.exchange_declare(exchange=exchange_name, type='fanout')
+        except Exception as e:
+            print e
+            log.exception("Couldn't declare exchange")
+            return
+        print "START ARCHIVING %s" % exchange_name
+
+        archive_queue_name = "%s.%s" % ("archive", stream_name)
+        archive_queue = self.channel.queue_declare(queue=archive_queue_name)
+        self.channel.queue_bind(exchange=exchange_name,
+                queue=archive_queue.method.queue)
+
         def archive_message(ch, method, properties, body):
             k = Key(bucket)
             filename = "archive-%s-%s" % (stream_name, str(time.time()))
             k.key = filename
             k.set_contents_from_string(body)
+            print "Sent '%s' to %s" % (body, filename)
 
-        consumer_key = self.channel.basic_consume(archive_message, queue=stream_name)
+        consumer_key = self.channel.basic_consume(archive_message, queue=archive_queue_name)
         self.archived_streams[stream_name] = consumer_key
+        print "ARCHIVING %s" % exchange_name
 
     def stop_archiving_stream(self, stream_name):
 
         consumer_tag = self.archived_streams[stream_name]
         self.channel.basic_cancel(consumer_tag=consumer_tag, nowait=False)
-        self.db_curs.execute("UPDATE streams SET archive=0 WHERE routekey='%s';" % stream_name)
+        self.db_curs.execute("UPDATE streams SET archive=0 WHERE stream_name='%s';" % stream_name)
+        self.channel.queue_unbind(queue="archive.%s" % stream_name, exchange="%s.%s" % (EXCHANGE_PREFIX, stream_name))
+        self.channel.queue_delete(queue="archive.%s" % stream_name)
         del self.archived_streams[stream_name]
 
     def archive_stream(self, stream_name):
-        self.db_curs.execute("UPDATE streams SET archive=1 WHERE routekey='%s';" % stream_name)
+        self.db_curs.execute("UPDATE streams SET archive=1 WHERE stream_name='%s';" % stream_name)
 
     def disable_archive_stream(self, stream_name):
-        self.db_curs.execute("UPDATE streams SET archive=0 WHERE routekey='%s';" % stream_name)
+        self.db_curs.execute("UPDATE streams SET archive=0 WHERE stream_name='%s';" % stream_name)
 
     def stream_archive(self, archived_stream_name, bucket_name=DEFAULT_ARCHIVE_BUCKET,
             stream_onto=None, start_time=None, end_time=None):
 
         if stream_onto is None:
             stream_onto = archived_stream_name
+
+        try:
+            exchange_name = "%s.%s" % (EXCHANGE_PREFIX, stream_onto)
+            self.channel.exchange_declare(exchange=exchange_name, type='fanout')
+        except Exception as e:
+            print e
+            log.exception("Couldn't declare exchange")
+            return
 
         try:
             bucket = self.s3_connection.get_bucket(bucket_name)
@@ -272,18 +318,30 @@ class StreamBoss(object):
             _, stream_name, timestamp = name_parts
             if stream_name == archived_stream_name:
                 message = key.get_contents_as_string()
-                print "s3: %s" % message
                 messages[timestamp] = message
 
         timestamps = messages.keys()
         timestamps.sort()
         for ts in timestamps:
-            self.channel.basic_publish(exchange='streams', routing_key=stream_name, body=messages[ts])
+            self.channel.basic_publish(exchange=exchange_name, body=messages[ts])
 
     def stream_file(self, stream_name, bucket_name, filename):
 
+        try:
+            exchange_name = "%s.%s" % (EXCHANGE_PREFIX, stream_name)
+            self.channel.exchange_declare(exchange=exchange_name, type='fanout')
+        except Exception as e:
+            print e
+            log.exception("Couldn't declare exchange")
+            return
+
+        try:
+            self.s3_connection.get_bucket(bucket_name)
+        except boto.exception.S3ResponseError:
+            raise Exception("Bucket '%s' is not available. Can't stream." % bucket_name)
+
         message = "%s:s3://%s/%s" % (S3_FILE_PREFIX, bucket_name, filename)
-        self.channel.basic_publish(exchange='streams', routing_key=stream_name, body=message)
+        self.channel.basic_publish(exchange=exchange_name, body=message)
 
     def _get_s3_connection(self):
         """
@@ -294,49 +352,81 @@ class StreamBoss(object):
              calling_format=boto.s3.connection.OrdinaryCallingFormat())
         return conn
 
+    def _get_bindings(self, exchange):
+        try:
+            r = requests.get('http://%s:%s/api/bindings' % (
+                RMQHOST, 15672),
+                auth=(RABBITMQ_USER, RABBITMQ_PASSWORD))
+        except Exception:
+            log.exception("Problem connecting to process registry")
+            return None
+        all_bindings = r.json()
+        wanted_bindings = []
+        exchange_name = "%s.%s" % (EXCHANGE_PREFIX, exchange)
+        for binding in all_bindings:
+            # TODO: if a stream is archived, should a process be started?
+            if binding['source'] == exchange_name and not binding['destination'].startswith('archive'):
+                wanted_bindings.append(binding)
+        return wanted_bindings
+
     def start(self):
         while True:
             streams = self.get_all_streams()
+            operations = self.get_all_operations()
             try:
                 for stream in streams:
                     stream_description = self.get_stream(stream)
+                    stream_name = stream_description['stream_name']
 
                     if (stream_description['archive'] == 1 and
-                            stream not in self.archived_streams.keys()):
-                        self.start_archiving_stream(stream)
+                            stream_name not in self.archived_streams.keys()):
+                        self.start_archiving_stream(stream_name)
                     elif (stream_description['archive'] == 0 and
-                            stream in self.archived_streams.keys()):
-                        self.stop_archiving_stream(stream)
+                            stream_name in self.archived_streams.keys()):
+                        self.stop_archiving_stream(stream_name)
 
                     try:
-                        status = self.channel.queue_declare(queue=stream)  # , passive=True)
+                        exchange_name = "%s.%s" % (EXCHANGE_PREFIX, stream_description['stream_name'])
+                        self.channel.exchange_declare(exchange=exchange_name, type='fanout')
                     except Exception as e:
                         print e
-                        log.exception("Couldn't declare queue")
+                        log.exception("Couldn't declare exchange")
                         continue
 
-                    message_count = status.method.message_count
-                    consumer_count = status.method.consumer_count
-                    if stream in self.archived_streams.keys():
-                        consumer_count -= 1
-                        consumer_count = max(0, consumer_count)
-                    created = streams[stream]["created"]
+                for operation in operations:
+                    operation_description = self.get_operation(operation)
+
+                    if operation_description.get('input_stream') is not None:
+                        self.create_stream(operation_description['input_stream'])
+                    if operation_description.get('output_stream') is not None:
+                        self.create_stream(operation_description['output_stream'])
+
+                    bindings = self._get_bindings(operation_description['output_stream'])
+
+                    message_count = 0
+                    consumer_count = 0
+                    for binding in bindings:
+                        queue = self.channel.queue_declare(queue=binding['destination'])
+                        message_count += queue.method.message_count
+                        consumer_count += queue.method.consumer_count
+
+                    created = operations[operation]["created"]
                     log.debug("%s: message_count %d, consumer_count %d, created %d" % (
-                        stream, message_count, consumer_count, created))
+                        operation, message_count, consumer_count, created))
 
                     if consumer_count > 0 and not created:
-                        log.info("%s has consumers, launching its process" % stream)
-                        if stream_description is None:
+                        log.info("%s has consumers, launching its process" % operation)
+                        if operation_description is None:
                             print "NO PROC DEF ID"
 
-                        process_id = self.launch_process(stream_description)
-                        self.mark_as_created(stream, process_id)
+                        process_id = self.launch_process(operation_description)
+                        self.mark_as_created(operation, process_id)
                     elif consumer_count == 0 and created:
-                        log.info("%s has 0 consumers, terminating its processes" % stream)
-                        process_id = stream_description.get('process_id')
+                        log.info("%s has 0 consumers, terminating its processes" % operation)
+                        process_id = operation_description.get('process_id')
                         if process_id:
                             self.terminate_process(process_id)
-                        self.mark_as_not_created(stream)
+                        self.mark_as_not_created(operation)
                     elif consumer_count == 0 and not created:
                         pass  # This is an idle state
 

@@ -2,9 +2,11 @@
 
 import os
 import sys
-import time
+import uuid
 
 import pika
+
+from stream_boss import EXCHANGE_PREFIX
 
 BUFSIZE = 4096
 RMQHOST = os.environ.get('STREAMBOSS_RABBITMQ_HOST', 'localhost')
@@ -20,13 +22,15 @@ class TestStreamAgent(object):
         self.channel = self.connection.channel()
 
         self.consume_stream = sys.argv[1]
-        self.exchange_name = 'streams'
+        self.exchange_name = "%s.%s" % (EXCHANGE_PREFIX, self.consume_stream)
 
-        self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, auto_delete=True)
+        self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, type='fanout')
+        self.queue_name = "%s.%s" % (self.exchange_name, str(uuid.uuid4().hex))
 
-        self.consume_queue = self.channel.queue_declare(queue=self.consume_stream)
+        self.consume_queue = self.channel.queue_declare(queue=self.queue_name, auto_delete=True)
+        print "BIND: %s %s" % (self.exchange_name, self.consume_queue.method.queue)
         self.channel.queue_bind(exchange=self.exchange_name,
-                queue=self.consume_queue.method.queue, routing_key=self.consume_stream)
+                queue=self.consume_queue.method.queue)
 
     def consume_func(self, ch, method, properties, body):
         if method.exchange == self.exchange_name:
@@ -38,11 +42,8 @@ class TestStreamAgent(object):
         try:
             self.channel.basic_consume(self.consume_func, queue=self.consume_queue.method.queue, no_ack=True)
             self.channel.start_consuming()
-        except Exception:
+        except KeyboardInterrupt:
             self.connection.close()
-
-        while True:
-            time.sleep(1)
 
 if __name__ == '__main__':
     TestStreamAgent().start()

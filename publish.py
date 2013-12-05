@@ -3,7 +3,7 @@
 import os
 import sys
 
-from subprocess import Popen
+from stream_boss import EXCHANGE_PREFIX
 
 import pika
 
@@ -22,13 +22,10 @@ class TestStreamAgent(object):
 
         self.publish_stream = sys.argv[1]
         self.body = sys.argv[2]
-        self.exchange_name = 'streams'
+        self.exchange_name = '%s.%s' % (EXCHANGE_PREFIX, self.publish_stream)
+        print self.exchange_name
 
-        self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, auto_delete=True)
-
-        self.publish_queue = self.channel.queue_declare(queue=self.publish_stream)
-        self.channel.queue_bind(exchange=self.exchange_name,
-                queue=self.publish_queue.method.queue, routing_key=self.publish_stream)
+        self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, type='fanout')
 
     def cleanup(self):
         self.channel.stop_consuming()
@@ -36,7 +33,7 @@ class TestStreamAgent(object):
 
     def start(self):
 
-        self.channel.basic_publish(exchange='streams', routing_key=self.publish_stream, body=self.body)
+        self.channel.basic_publish(exchange=self.exchange_name, routing_key='', body=self.body)
 
 if __name__ == '__main__':
     TestStreamAgent().start()

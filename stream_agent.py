@@ -2,6 +2,7 @@
 
 import os
 import sys
+import uuid
 import json
 import pika
 import select
@@ -14,7 +15,7 @@ except ImportError:
 
 from subprocess import PIPE, Popen, STDOUT
 
-from stream_boss import S3_FILE_PREFIX
+from stream_boss import S3_FILE_PREFIX, EXCHANGE_PREFIX
 
 BUFSIZE = 4096
 RMQHOST = os.environ.get('STREAMBOSS_RABBITMQ_HOST', 'localhost')
@@ -74,19 +75,20 @@ class ProcessDispatcherAgent(object):
         self.input_stream = args.input_stream
         self.output_stream = args.output_stream
 
-        self.exchange_name = 'streams'
+        self.exchange_name = "%s.%s" % (EXCHANGE_PREFIX, self.input_stream)
+        self.output_exchange_name = "%s.%s" % (EXCHANGE_PREFIX, self.output_stream)
 
-        self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, auto_delete=True)
+        self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, type='fanout')
+        self.output_exchange = self.channel.exchange_declare(exchange=self.output_exchange_name, type='fanout')
 
-        self.input_queue = self.channel.queue_declare(queue=self.input_stream)
-        self.output_queue = self.channel.queue_declare(queue=self.output_stream)
+        #TODO some random queue
+        self.input_queue_name = "%s.%s" % (self.exchange_name, str(uuid.uuid4().hex))
+        self.input_queue = self.channel.queue_declare(queue=self.input_queue_name, auto_delete=True)
         self.channel.queue_bind(exchange=self.exchange_name,
-                queue=self.input_queue.method.queue, routing_key=self.input_stream)
-        self.channel.queue_bind(exchange=self.exchange_name,
-                queue=self.output_queue.method.queue, routing_key=self.output_stream)
+                queue=self.input_queue.method.queue)
 
     def single_consume_func(self, ch, method, properties, body):
-        if method.exchange == "streams":
+        if method.exchange == self.exchange_name:
             message = body
             print "< got: %s" % message
         else:
@@ -109,12 +111,12 @@ class ProcessDispatcherAgent(object):
             output = output[:-1]
         print "> sending: %s" % output
         if returncode == 0:
-            self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=output)
+            self.channel.basic_publish(exchange=self.output_exchange_name, routing_key='', body=output)
         else:
             print "Error running %s: returned %d" % (self.process_path, returncode)
 
     def service_consume_func(self, ch, method, properties, body):
-        if method.exchange == "streams":
+        if method.exchange == self.exchange_name:
             message = body
             print "< got: %s" % message
         else:
@@ -135,7 +137,7 @@ class ProcessDispatcherAgent(object):
             if ready:
                 line = self.p.stdout.readline()
                 print "> sending: %s" % line
-                self.channel.basic_publish(exchange='streams', routing_key=self.output_stream, body=line)
+                self.channel.basic_publish(exchange=self.output_exchange_name, routing_key='', body=line)
         else:
             print "process ended with %s" % self.p.poll()
 
@@ -200,13 +202,15 @@ class ProcessDispatcherAgent(object):
 
         try:
             self.channel.start_consuming()
-        except Exception as e:
-            print e
+        except KeyboardInterrupt:
             self.channel.stop_consuming()
 
         if hasattr(self, 'p') and self.p:
-            self.p.kill()
-            self.p.wait()
+            try:
+                self.p.kill()
+                self.p.wait()
+            except OSError:
+                pass  # must have already been killed
         self.connection.close()
 
 if __name__ == '__main__':
