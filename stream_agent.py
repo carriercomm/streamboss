@@ -13,7 +13,7 @@ try:
 except ImportError:
     boto = None
 
-from subprocess import PIPE, Popen, STDOUT
+from subprocess import PIPE, Popen
 
 from stream_boss import S3_FILE_PREFIX, EXCHANGE_PREFIX
 
@@ -99,7 +99,7 @@ class ProcessDispatcherAgent(object):
             message = self._get_file_from_s3_url(message)
 
         self.p = Popen(self.process_path, shell=True, bufsize=BUFSIZE, env=self.process_environment,
-                stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True, cwd="/tmp")
+                stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, cwd="/tmp")
         (child_stdin, child_stdout, child_stderr) = (self.p.stdin, self.p.stdout, self.p.stderr)
         child_stdin.write(message + "\n")
         child_stdin.flush()
@@ -192,7 +192,7 @@ class ProcessDispatcherAgent(object):
         if self.process_type == SERVICE_PROCESS_TYPE:
             self.p = Popen(self.process_path, shell=True, bufsize=BUFSIZE,
                     env=self.process_environment,
-                    stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True, cwd="/tmp")
+                    stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True, cwd="/tmp")
             self.channel.basic_consume(self.service_consume_func, queue=self.input_queue.method.queue, no_ack=True)
             self.read_thread = threading.Thread(target=self._read_from_process)
             self.read_thread.run()
