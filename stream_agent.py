@@ -15,7 +15,8 @@ except ImportError:
 
 from subprocess import PIPE, Popen
 
-from stream_boss import S3_FILE_PREFIX, EXCHANGE_PREFIX
+S3_FILE_PREFIX = "___STREAMBOSS_S3_FILE___"
+EXCHANGE_PREFIX = "streams"
 
 BUFSIZE = 4096
 RMQHOST = os.environ.get('STREAMBOSS_RABBITMQ_HOST', 'localhost')

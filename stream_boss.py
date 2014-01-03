@@ -7,6 +7,7 @@ import json
 import time
 import pika
 import requests
+import threading
 import boto.s3.connection
 import MySQLdb as sql
 
@@ -85,21 +86,37 @@ class StreamBoss(object):
         self.s3_connection = self._get_s3_connection()
         self.operations = {}
 
+        self.dashi.handle(self.create_stream)
+        self.dashi.handle(self.remove_stream)
+        self.dashi.handle(self.create_operation)
+        self.dashi.handle(self.remove_operation)
+        self.dashi.handle(self.get_all_operations)
+        self.dashi.handle(self.get_all_streams)
+
+        self.dashi_thread = threading.Thread(target=self.dashi.consume)
+        self.dashi_thread.start()
+
     def get_all_streams(self):
         streams = {}
-        self.db_curs.execute("SELECT stream_name FROM streams")
-        for stream_name in self.db_curs.fetchall():
-            streams[stream_name] = {}
+        self.db_curs.execute("SELECT stream_name,archive FROM streams")
+        for stream_name, archive in self.db_curs.fetchall():
+            streams[stream_name] = {'archive': archive}
         return streams
 
     def get_all_operations(self):
         streams = {}
-        self.db_curs.execute("SELECT routekey, created FROM operations")
-        for name, created in self.db_curs.fetchall():
-            streams[name] = {"created": created}
+        self.db_curs.execute("SELECT routekey,created,process_definition_id,input_stream,output_stream,archive FROM operations")
+        for name, created, process_definition_id, input_stream, output_stream, archive in self.db_curs.fetchall():
+            streams[name] = {
+                "created": created,
+                "process_definition_id": process_definition_id,
+                "input_stream": input_stream,
+                "output_stream": output_stream,
+                "archive": archive,
+            }
         return streams
 
-    def get_operation(self, operation):
+    def get_operation(self, operation=None):
         self.db_curs.execute(
             "SELECT process_definition_id,input_stream,output_stream,process, process_id, archive " +
             "FROM operations WHERE routekey='%s';" %
@@ -115,7 +132,7 @@ class StreamBoss(object):
         }
         return stream_dict
 
-    def get_stream(self, stream):
+    def get_stream(self, stream=None):
         self.db_curs.execute(
             "SELECT stream_name,archive " +
             "FROM streams WHERE stream_name='%s';" %
@@ -218,13 +235,13 @@ class StreamBoss(object):
 
         return process_definition
 
-    def create_operation(self, operation_name, process_definition_id, input_stream, output_stream):
-        self.db_curs.execute("INSERT INTO streams (routekey, process_definition_id, input_stream, output_stream, created) VALUES ('%s', '%s', '%s', '%s', 0)" % (operation_name, process_definition_id, input_stream, output_stream))  # noqa
+    def create_operation(self, operation_name=None, process_definition_id=None, input_stream=None, output_stream=None):
+        self.db_curs.execute("INSERT INTO operations (routekey, process_definition_id, input_stream, output_stream, created) VALUES ('%s', '%s', '%s', '%s', 0)" % (operation_name, process_definition_id, input_stream, output_stream))  # noqa
 
-    def remove_operation(self, operation_name):
-        self.db_curs.execute("DELETE FROM streams where streams.routekey='%s'" % operation_name)
+    def remove_operation(self, operation_name=None):
+        self.db_curs.execute("DELETE FROM operations where operations.routekey='%s'" % operation_name)
 
-    def create_stream(self, stream_name):
+    def create_stream(self, stream_name=None):
         s = self.get_stream(stream_name)
         if s is None:
             q = "INSERT INTO streams (stream_name) VALUES ('%s') " % stream_name
@@ -232,8 +249,8 @@ class StreamBoss(object):
         s = self.get_stream(stream_name)
         return s
 
-    def remove_stream(self):
-        pass
+    def remove_stream(self, stream_name=None):
+        self.db_curs.execute("DELETE FROM streams where streams.stream_name='%s'" % stream_name)
 
     def start_archiving_stream(self, stream_name, bucket_name=DEFAULT_ARCHIVE_BUCKET,
             leave_messages_on_queue=True):
@@ -370,6 +387,7 @@ class StreamBoss(object):
         return wanted_bindings
 
     def start(self):
+
         while True:
             streams = self.get_all_streams()
             operations = self.get_all_operations()
@@ -406,7 +424,7 @@ class StreamBoss(object):
                     message_count = 0
                     consumer_count = 0
                     for binding in bindings:
-                        queue = self.channel.queue_declare(queue=binding['destination'])
+                        queue = self.channel.queue_declare(queue=binding['destination'], auto_delete=True)
                         message_count += queue.method.message_count
                         consumer_count += queue.method.consumer_count
 
@@ -436,4 +454,9 @@ class StreamBoss(object):
             time.sleep(1)
 
 if __name__ == '__main__':
-    StreamBoss().start()
+    sb = StreamBoss()
+    try:
+        sb.start()
+    except KeyboardInterrupt:
+        sb.dashi.cancel()
+        sb.dashi.disconnect()
