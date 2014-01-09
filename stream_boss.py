@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 import uuid
 import json
 import time
@@ -83,7 +84,11 @@ class StreamBoss(object):
         self.pd_client.dashi_name = 'process_dispatcher'
 
         self.archived_streams = {}  # TODO: this sucks
-        self.s3_connection = self._get_s3_connection()
+        try:
+            self.s3_connection = self._get_s3_connection()
+        except Exception:
+            print >> sys.stderr, "Couldn't get s3 connection, continuing without"
+            self.s3_connection = None
         self.operations = {}
 
         self.dashi.handle(self.create_stream)
@@ -259,6 +264,8 @@ class StreamBoss(object):
         saved in a file named archive-STREAMNAME-TIMESTAMP. In the future, this could
         be chunked by second/minute/hour etc.
         """
+        if self.s3_connection is None:
+            return
         try:
             bucket = self.s3_connection.get_bucket(bucket_name)
         except boto.exception.S3ResponseError:
@@ -308,6 +315,9 @@ class StreamBoss(object):
     def stream_archive(self, archived_stream_name, bucket_name=DEFAULT_ARCHIVE_BUCKET,
             stream_onto=None, start_time=None, end_time=None):
 
+        if self.s3_connection is None:
+            return
+
         if stream_onto is None:
             stream_onto = archived_stream_name
 
@@ -343,6 +353,9 @@ class StreamBoss(object):
             self.channel.basic_publish(exchange=exchange_name, body=messages[ts])
 
     def stream_file(self, stream_name, bucket_name, filename):
+
+        if self.s3_connection is None:
+            return
 
         try:
             exchange_name = "%s.%s" % (EXCHANGE_PREFIX, stream_name)

@@ -28,7 +28,6 @@ class TestStreamAgent(object):
         self.queue_name = "%s.%s" % (self.exchange_name, str(uuid.uuid4().hex))
 
         self.consume_queue = self.channel.queue_declare(queue=self.queue_name, auto_delete=True)
-        print "BIND: %s %s" % (self.exchange_name, self.consume_queue.method.queue)
         self.channel.queue_bind(exchange=self.exchange_name,
                 queue=self.consume_queue.method.queue)
 
