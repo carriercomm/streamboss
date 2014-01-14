@@ -1,0 +1,40 @@
+process-dispatchers:
+  process_dispatcher:
+    config:
+      processdispatcher:
+        static_resources: False
+        epum_service_name: epum_0
+        definition_id: pd_definition
+        domain_config:
+          engine_conf:
+            deployable_type: default
+            iaas_site: alamo
+        engines:
+          default:
+            deployable_type: eeagent
+            slots: 4
+            base_need: 0
+provisioners:
+  provisioner_0:
+    config:
+      provisioner:
+        default_user: default
+dt_registries:
+  dtrs:
+    config: {}
+epums:
+  epum_0:
+    config:
+      epumanagement:
+        default_user: default
+        provisioner_service_name: provisioner_0
+        initial_definitions:
+          pd_definition:
+            general:
+              engine_class: epu.decisionengine.impls.needy.NeedyEngine
+            health:
+              monitor_health: False
+      logging:
+        handlers:
+          file:
+            filename: /tmp/epum_0.log
