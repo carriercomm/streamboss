@@ -23,7 +23,6 @@ class TestStreamAgent(object):
         self.publish_stream = sys.argv[1]
         self.body = sys.argv[2]
         self.exchange_name = '%s.%s' % (EXCHANGE_PREFIX, self.publish_stream)
-        print self.exchange_name
 
         self.exchange = self.channel.exchange_declare(exchange=self.exchange_name, type='fanout')
 

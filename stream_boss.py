@@ -65,41 +65,13 @@ STREAM_AGENT_PATH = os.environ.get("STREAM_AGENT_PATH",
 class StreamBoss(object):
 
     def __init__(self):
-        credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
-        self.connection_parameters = pika.ConnectionParameters(RMQHOST, credentials=credentials)
-        self.connection = pika.BlockingConnection(self.connection_parameters)
-        self.channel = self.connection.channel()
 
         self.db_connection = sql.connect(DBHOST, DBUSER, DBPASS, DBDB)
         self.db_connection.autocommit(True)
         self.db_curs = self.db_connection.cursor()
 
-        self.dashi = DashiConnection("streamboss",
-                  'amqp://%s:%s@%s:%s//' % (
-                      RABBITMQ_USER,
-                      RABBITMQ_PASSWORD, RMQHOST,
-                      RMQPORT),
-                  RABBITMQ_EXCHANGE, ssl=False, sysname=None)
-        self.pd_client = PDClient(self.dashi)
-        self.pd_client.dashi_name = 'process_dispatcher'
-
         self.archived_streams = {}  # TODO: this sucks
-        try:
-            self.s3_connection = self._get_s3_connection()
-        except Exception:
-            print >> sys.stderr, "Couldn't get s3 connection, continuing without"
-            self.s3_connection = None
         self.operations = {}
-
-        self.dashi.handle(self.create_stream)
-        self.dashi.handle(self.remove_stream)
-        self.dashi.handle(self.create_operation)
-        self.dashi.handle(self.remove_operation)
-        self.dashi.handle(self.get_all_operations)
-        self.dashi.handle(self.get_all_streams)
-
-        self.dashi_thread = threading.Thread(target=self.dashi.consume)
-        self.dashi_thread.start()
 
     def get_all_streams(self):
         streams = {}
@@ -400,6 +372,35 @@ class StreamBoss(object):
         return wanted_bindings
 
     def start(self):
+
+        credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
+        self.connection_parameters = pika.ConnectionParameters(RMQHOST, credentials=credentials)
+        self.connection = pika.BlockingConnection(self.connection_parameters)
+        self.channel = self.connection.channel()
+        self.dashi = DashiConnection("streamboss",
+                  'amqp://%s:%s@%s:%s//' % (
+                      RABBITMQ_USER,
+                      RABBITMQ_PASSWORD, RMQHOST,
+                      RMQPORT),
+                  RABBITMQ_EXCHANGE, ssl=False, sysname=None)
+        self.pd_client = PDClient(self.dashi)
+        self.pd_client.dashi_name = 'process_dispatcher'
+
+        try:
+            self.s3_connection = self._get_s3_connection()
+        except Exception:
+            print >> sys.stderr, "Couldn't get s3 connection, continuing without"
+            self.s3_connection = None
+
+        self.dashi.handle(self.create_stream)
+        self.dashi.handle(self.remove_stream)
+        self.dashi.handle(self.create_operation)
+        self.dashi.handle(self.remove_operation)
+        self.dashi.handle(self.get_all_operations)
+        self.dashi.handle(self.get_all_streams)
+
+        self.dashi_thread = threading.Thread(target=self.dashi.consume)
+        self.dashi_thread.start()
 
         while True:
             streams = self.get_all_streams()
